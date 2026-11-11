@@ -1,0 +1,19 @@
+node_modules/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Local data and generated output
+data/*.db*
+dist/
+coverage/
+*.log
+npm-debug.log*

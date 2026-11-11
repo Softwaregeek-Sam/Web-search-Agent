@@ -1,0 +1,32 @@
+{
+  "name": "web-search-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chat agent with one tool (web search), harness-side time and memory.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "tsx watch --disable-warning=ExperimentalWarning src/server.ts",
+    "start": "tsx --disable-warning=ExperimentalWarning src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.6",
+    "chrono-node": "^2.10.3",
+    "dompurify": "^3.4.17",
+    "dotenv": "^18.0.10",
+    "hono": "^4.13.17",
+    "marked": "^18.2.0",
+    "openai": "^7.55.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
