@@ -4,8 +4,19 @@ import { formatNow, isValidTimeZone } from "../context/time.js";
 import type { Store } from "../db.js";
 import type { LlmClient } from "../llm/client.js";
 import { clip, errFields, type Logger } from "../logger.js";
-import type { SearchProvider } from "../search/provider.js";
-import type { AgentEvent, LlmConversationMessage, LlmMessage, LlmToolCall, LlmToolMessage, StoredMessage } from "../types.js";
+import type { SearchProvider, SearchRequest, SearchResult } from "../search/provider.js";
+import type {
+  AgentEvent,
+  CitationSource,
+  LlmConversationMessage,
+  LlmMessage,
+  LlmToolCall,
+  LlmToolMessage,
+  SearchQueryRecord,
+  StoredMessage,
+} from "../types.js";
+import { validateCitations } from "./citations.js";
+import { answerDate, isRevalidationRequest, REVALIDATION_SYSTEM_PROMPT } from "./revalidation.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { ToolArgumentError, toolRepairMessage, validateWebSearchToolCall, WEB_SEARCH_TOOL } from "./tools.js";
 
@@ -116,22 +127,25 @@ async function executeSearchCall(
   provider: SearchProvider | undefined,
   signal: AbortSignal | undefined,
   log: Logger,
-): Promise<LlmToolMessage> {
+): Promise<{ message: LlmToolMessage; request?: SearchRequest; results?: SearchResult[] }> {
   let request;
   try {
     request = validateWebSearchToolCall(call);
     if (!provider) throw new Error("Search is not configured.");
     const results = await searchWithCancellation(provider, request, signal);
     log.info("turn.search.done", { query: request.query, results: results.length });
-    return { role: "tool", tool_call_id: call.id, content: searchToolResult(results) };
+    return { message: { role: "tool", tool_call_id: call.id, content: searchToolResult(results) }, request, results };
   } catch (error) {
     if (signal?.aborted) throw error;
     if (error instanceof ToolArgumentError) {
       log.warn("turn.tool_call.invalid", { id: call.id, message: error.message });
-      return toolRepairMessage(error);
+      return { message: toolRepairMessage(error) };
     }
     log.error("turn.search.error", { query: call.function.arguments, ...errFields(error) });
-    return { role: "tool", tool_call_id: call.id, content: searchErrorResult(error instanceof Error ? error.message : String(error)) };
+    return {
+      message: { role: "tool", tool_call_id: call.id, content: searchErrorResult(error instanceof Error ? error.message : String(error)) },
+      request,
+    };
   }
 }
 
@@ -193,6 +207,88 @@ export async function* runTurn(deps: AgentDeps, input: TurnInput): AsyncGenerato
   });
   log.debug("turn.prompt", { messages: JSON.stringify(messages) });
 
+  if (search && isRevalidationRequest(input.message)) {
+    const historical = store.latestSearchedAnswer(input.userId);
+    if (!historical || historical.queries.length === 0) {
+      yield { type: "error", message: "I could not find an earlier searched answer to revalidate." };
+      return;
+    }
+    const recencyAfter = answerDate(historical.message.createdAt);
+    const queries = historical.queries.map((query) => ({ ...query, recency_after: recencyAfter }));
+    yield { type: "status", text: "Rechecking the earlier answer…" };
+    const searchStarted = clock();
+    let fresh;
+    try {
+      fresh = await Promise.all(queries.map((query) => search.search(query)));
+    } catch (error) {
+      log.error("revalidation.search_error", errFields(error));
+      yield { type: "error", message: `Revalidation search failed: ${error instanceof Error ? error.message : String(error)}` };
+      return;
+    }
+    const revalidationSearchMs = clock() - searchStarted;
+    const revalidationSources: CitationSource[] = [];
+    const seen = new Set<string>();
+    for (const result of fresh.flat()) {
+      if (!seen.has(result.url)) {
+        seen.add(result.url);
+        revalidationSources.push(result);
+      }
+    }
+    const evidence = fresh.flat();
+    const revalidationMessages: LlmConversationMessage[] = [
+      { role: "system", content: `${REVALIDATION_SYSTEM_PROMPT}\nCurrent date and time: ${formatNow(started, tz)}` },
+      {
+        role: "user",
+        content: `<original_answer>\n${historical.message.content}\n</original_answer>\n<fresh_search_results>\n${JSON.stringify(evidence)}\n</fresh_search_results>`,
+      },
+    ];
+    let revalidatedAnswer = "";
+    let revalidationModel = "";
+    let revalidationFinish: string | null = null;
+    try {
+      for await (const event of llm.stream({ messages: revalidationMessages, signal: input.signal, log })) {
+        if (event.type === "token") revalidatedAnswer += event.text;
+        else if (event.type === "finish") {
+          revalidationModel = event.model;
+          revalidationFinish = event.finishReason;
+        }
+      }
+    } catch (error) {
+      log.error("revalidation.error", errFields(error));
+      yield { type: "error", message: `Revalidation failed: ${error instanceof Error ? error.message : String(error)}` };
+      return;
+    }
+    if (!revalidatedAnswer.trim()) {
+      yield { type: "error", message: `Revalidation returned no answer (finish reason: ${revalidationFinish ?? "unknown"}).` };
+      return;
+    }
+    revalidatedAnswer = validateCitations(revalidatedAnswer, revalidationSources);
+    yield { type: "token", text: revalidatedAnswer };
+    const messageId = store.addMessage({
+      conversationId,
+      userId: input.userId,
+      role: "assistant",
+      content: revalidatedAnswer,
+      createdAt: clock(),
+      tz,
+    });
+    store.addSearchProvenance(conversationId, input.userId, messageId, queries, revalidationSources);
+    yield {
+      type: "done",
+      messageId,
+      trace: {
+        model: revalidationModel,
+        ttftMs: null,
+        searchMs: revalidationSearchMs,
+        totalMs: clock() - started,
+        recalledMessages: recall.messageCount,
+        promptChars: REVALIDATION_SYSTEM_PROMPT.length,
+      },
+      sources: revalidationSources,
+    };
+    return;
+  }
+
   let answer = "";
   let ttft: number | null = null;
   let model = "";
@@ -201,6 +297,10 @@ export async function* runTurn(deps: AgentDeps, input: TurnInput): AsyncGenerato
   let chunks = 0;
   let reasoning = false;
   let searchMs: number | null = null;
+  const searchQueries: SearchQueryRecord[] = [];
+  const sources: CitationSource[] = [];
+  const sourceUrls = new Set<string>();
+  const bufferAnswer = search !== undefined;
   let budgetExhausted = false;
   for (let step = 0; step < MAX_AGENT_STEPS; step++) {
     const toolCalls: LlmToolCall[] = [];
@@ -218,7 +318,7 @@ export async function* runTurn(deps: AgentDeps, input: TurnInput): AsyncGenerato
           }
           chunks++;
           answer += ev.text;
-          yield { type: "token", text: ev.text };
+          if (!bufferAnswer) yield { type: "token", text: ev.text };
         } else if (ev.type === "reasoning") {
           reasoning = true;
           yield { type: "status", text: "Model is reasoning before it answers…" };
@@ -253,7 +353,19 @@ export async function* runTurn(deps: AgentDeps, input: TurnInput): AsyncGenerato
       try {
         const results = await Promise.all(calls.map((call) => executeSearchCall(call, search, input.signal, log)));
         searchMs = (searchMs ?? 0) + (clock() - searchStarted);
-        messages.push(...results);
+        messages.push(...results.map((result) => result.message));
+        for (const result of results) {
+          if (result.request && result.results) {
+            const retrievedAt = result.results[0]?.retrieved_at ?? new Date().toISOString();
+            searchQueries.push({ ...result.request, retrievedAt });
+            for (const source of result.results) {
+              if (!sourceUrls.has(source.url)) {
+                sourceUrls.add(source.url);
+                sources.push(source);
+              }
+            }
+          }
+        }
       } catch (error) {
         searchMs = (searchMs ?? 0) + (clock() - searchStarted);
         if (input.signal?.aborted) {
@@ -280,7 +392,7 @@ export async function* runTurn(deps: AgentDeps, input: TurnInput): AsyncGenerato
   if (budgetExhausted) {
     const notice = "\n\n[Search step budget exhausted; this answer may be incomplete.]";
     answer += notice;
-    yield { type: "token", text: notice };
+    if (!bufferAnswer) yield { type: "token", text: notice };
     log.warn("turn.step_budget_exhausted", { steps: MAX_AGENT_STEPS });
   }
 
@@ -296,7 +408,12 @@ export async function* runTurn(deps: AgentDeps, input: TurnInput): AsyncGenerato
     return;
   }
 
+  answer = validateCitations(answer, sources);
+  if (bufferAnswer) yield { type: "token", text: answer };
   const messageId = store.addMessage({ conversationId, userId: input.userId, role: "assistant", content: answer, createdAt: clock(), tz });
+  if (searchQueries.length || sources.length) {
+    store.addSearchProvenance(conversationId, input.userId, messageId, searchQueries, sources);
+  }
   const trace = {
     model,
     ttftMs: ttft,
@@ -310,5 +427,5 @@ export async function* runTurn(deps: AgentDeps, input: TurnInput): AsyncGenerato
     usage: usage === undefined ? undefined : JSON.stringify(usage),
   });
   log.debug("turn.answer", { text: answer });
-  yield { type: "done", messageId, trace };
+  yield { type: "done", messageId, trace, sources };
 }

@@ -35,7 +35,8 @@ While waiting for the first answer token, `llm.waiting` prints every 5 seconds, 
 | `npm run dev` | Server with reload |
 | `npm test` | Unit and integration tests (fixed clock, fake LLM) |
 | `npm run typecheck` | `tsc --noEmit` |
+| `npm run eval` | Offline fixed-clock evaluation fixtures |
 
 ## Status
 
-Phase 1 done: request-cycle logging, streaming chat, SQLite history with FTS5, timezone-aware date resolution, deterministic recall of earlier conversations. Next: `web_search` tool and agent loop budgets, citation checks, revalidation of old answers, eval suite.
+The core search agent is implemented: streaming chat, deterministic time and memory recall, Tavily search with caching/retries, bounded tool loops, citation validation, source provenance, and answer revalidation. `npm run eval` runs the offline fixtures.

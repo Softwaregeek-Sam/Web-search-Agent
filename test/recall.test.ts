@@ -56,6 +56,12 @@ describe("buildRecall", () => {
     expect(r.block).toContain("comparison"); // neighbor reply is included
   });
 
+  it("recalls personal preferences asked about in a new conversation", () => {
+    seed("c-preference", "u1", at(11, 8, 10, 0), "My favorite CRM tool is HubSpot.", "I will remember that preference.");
+    const r = recall("What is my favorite CRM tool?");
+    expect(r.block).toContain("HubSpot");
+  });
+
   it("does nothing for ordinary messages", () => {
     const r = recall("Explain how B-trees work");
     expect(r.block).toBeNull();

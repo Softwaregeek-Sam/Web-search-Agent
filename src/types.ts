@@ -47,6 +47,23 @@ export interface LlmToolDefinition {
   };
 }
 
+export interface CitationSource {
+  title: string;
+  url: string;
+  domain: string;
+  published_date: string | null;
+  snippet: string;
+  retrieved_at: string;
+}
+
+export interface SearchQueryRecord {
+  query: string;
+  recency_after?: string;
+  topic?: "general" | "news";
+  domains?: string[];
+  retrievedAt: string;
+}
+
 export interface TurnTrace {
   model: string;
   ttftMs: number | null;
@@ -60,5 +77,5 @@ export type AgentEvent =
   | { type: "meta"; conversationId: string }
   | { type: "status"; text: string }
   | { type: "token"; text: string }
-  | { type: "done"; messageId: number; trace: TurnTrace }
+  | { type: "done"; messageId: number; trace: TurnTrace; sources: CitationSource[] }
   | { type: "error"; message: string };

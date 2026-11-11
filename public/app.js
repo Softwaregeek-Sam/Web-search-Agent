@@ -15,7 +15,25 @@ const stampFmt = new Intl.DateTimeFormat(undefined, { weekday: "short", day: "nu
 const stamp = (ms) => stampFmt.format(new Date(ms));
 const render = (md) => DOMPurify.sanitize(marked.parse(md, { gfm: true, breaks: false }), { ADD_ATTR: ["target"] });
 
-function addMessage(role, text, ms = Date.now()) {
+function addSources(body, sources = []) {
+  if (!sources.length) return;
+  const list = document.createElement("div");
+  list.className = "sources";
+  const heading = document.createElement("strong");
+  heading.textContent = "Sources";
+  list.append(heading);
+  sources.forEach((source, index) => {
+    const link = document.createElement("a");
+    link.href = source.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = `[${index + 1}] ${source.title} (${source.domain})`;
+    list.append(link);
+  });
+  body.append(list);
+}
+
+function addMessage(role, text, ms = Date.now(), sources = []) {
   empty?.remove();
   const row = document.createElement("article");
   row.className = `msg ${role}`;
@@ -24,6 +42,7 @@ function addMessage(role, text, ms = Date.now()) {
   const body = row.querySelector(".body");
   if (role === "user") body.textContent = text;
   else body.innerHTML = render(text);
+  if (role !== "user") addSources(body, sources);
   log.append(row);
   log.scrollTop = log.scrollHeight;
   return body;
@@ -64,6 +83,8 @@ async function ask(message) {
   controller = new AbortController();
   setBusy(true);
   let text = "";
+  let sources = [];
+  let errorMessage = "";
   let pending = false;
   const paint = () => {
     pending = false;
@@ -89,14 +110,19 @@ async function ask(message) {
         text += ev.text;
         if (!pending) { pending = true; requestAnimationFrame(paint); }
       } else if (ev.type === "error") {
-        paint();
-        const err = document.createElement("div");
-        err.className = "status error";
-        err.textContent = ev.message;
-        body.append(err);
+        errorMessage = ev.message;
+      } else if (ev.type === "done") {
+        sources = ev.sources || [];
       }
     }
     paint();
+    if (errorMessage) {
+      const err = document.createElement("div");
+      err.className = "status error";
+      err.textContent = errorMessage;
+      body.append(err);
+    }
+    addSources(body, sources);
   } catch (err) {
     if (err.name !== "AbortError") {
       const e = document.createElement("div");
@@ -140,6 +166,6 @@ document.querySelectorAll(".examples button").forEach((b) =>
 if (conversationId) {
   fetch(`/api/conversations/${conversationId}`)
     .then((r) => r.json())
-    .then(({ messages }) => messages.forEach((m) => addMessage(m.role, m.content, m.createdAt)))
+    .then(({ messages }) => messages.forEach((m) => addMessage(m.role, m.content, m.createdAt, m.sources)))
     .catch(() => {});
 }

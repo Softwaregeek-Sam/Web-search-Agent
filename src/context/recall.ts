@@ -3,7 +3,7 @@ import type { StoredMessage } from "../types.js";
 import { describeRefs, formatInstant, resolveTemporalRefs, type TemporalRef } from "./time.js";
 
 const BACKWARD_RE =
-  /\b(i (asked|told|said|mentioned|shared)|you (said|told|answered|recommended|suggested|gave)|we (discussed|shortlisted|talked|picked|decided|chose|looked)|earlier|last time|previously|a while ago|remember when|our (last|previous) (chat|conversation))\b/i;
+  /\b(i (asked|told|said|mentioned|shared)|you (said|told|answered|recommended|suggested|gave)|we (discussed|shortlisted|talked|picked|decided|chose|looked)|my (favorite|favourite|preferred|usual)|what(?:'s| is) my|what do i (like|prefer|use)|do you remember|earlier|last time|previously|a while ago|remember when|our (last|previous) (chat|conversation))\b/i;
 
 const MAX_WINDOW_MESSAGES = 30;
 const MAX_FTS_HITS = 5;

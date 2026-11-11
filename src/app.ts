@@ -96,7 +96,7 @@ export function createApp(deps: AgentDeps) {
   app.get("/api/conversations/:id", (c) => {
     const userId = getCookie(c, "uid");
     if (!userId) return c.json({ messages: [] });
-    return c.json({ messages: deps.store.conversationMessages(c.req.param("id"), userId) });
+    return c.json({ messages: deps.store.conversationMessagesWithSources(c.req.param("id"), userId) });
   });
 
   vendorRoute(app, "/vendor/marked.js", "marked");
